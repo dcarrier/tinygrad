@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, cast, Generator, Tuple, Union
+from typing import List, Dict, Optional, cast, Generator, Tuple, Union, Any
 import time, pprint
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -70,7 +70,8 @@ class Runner:
     self.first_run, self.display_name, self.dname, self.op_estimate, self.mem_estimate, self.lds_estimate = \
       True, display_name, dname, op_estimate, mem_estimate, mem_estimate if lds_estimate is None else lds_estimate
   @property
-  def device(self): return Device[self.dname]
+  # TODO(dcarrier): I need to end up fixing this so it returns MetalDevice
+  def device(self) -> Any: return Device[self.dname]
   def exec(self, rawbufs:List[Buffer], var_vals:Optional[Dict[Variable, int]]=None) -> Optional[float]:
     return self(rawbufs, {} if var_vals is None else var_vals)
   def __call__(self, rawbufs:List[Buffer], var_vals:Dict[Variable, int], wait=False) -> Optional[float]:

@@ -62,11 +62,9 @@ class LazyOp:
     const_vars = [x.arg.val for x in self.lazyops if x.op is BufferOps.CONST and isinstance(x.arg.val, Variable)]
     return sorted(set.union(*extract_vars, set(const_vars)), key=lambda v: v.expr)
   def __add__(self, x:LazyOp): return LazyOp(BinaryOps.ADD, (self, x))
-  def __sub__(self, x:LazyOp): return LazyOp(BinaryOps.ADD, (self, -x))
   def __mul__(self, x:LazyOp): return LazyOp(BinaryOps.MUL, (self, x))
   def ne(self, x:LazyOp): return LazyOp(BinaryOps.CMPNE, (self, x))
   def eq(self, x:LazyOp): return -self.ne(x)
-  def __neg__(self): return LazyOp(UnaryOps.NEG, (self,))
   @staticmethod
   def const(val, dtype:DType, shape:Tuple[sint, ...]):
     return LazyOp(BufferOps.CONST, (), ConstBuffer(val, dtype, ShapeTracker.from_shape(()).reshape((1,)*len(shape)).expand(shape)))

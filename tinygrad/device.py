@@ -71,7 +71,7 @@ class Buffer:
   @property
   def base(self) -> Buffer: return self._base if self._base is not None else self
   @property
-  def lb_refcount(self): return self.base._lb_refcount
+  def lb_refcount(self) -> int: return self.base._lb_refcount
   def ref(self, cnt): self.base._lb_refcount += cnt
   def is_allocated(self) -> bool: return hasattr(self, '_buf')
   def ensure_allocated(self) -> Buffer: return self.allocate() if not hasattr(self, '_buf') else self
@@ -96,7 +96,7 @@ class Buffer:
       self.copyout(memoryview(buf))
     return self.__class__, (self.device, self.size, self.dtype, None, self.options, buf, self.lb_refcount)
   @property
-  def nbytes(self): return self.size*self.dtype.itemsize
+  def nbytes(self) -> int: return self.size*self.dtype.itemsize
   def __del__(self):
     if not hasattr(self, '_buf'): return
     if self._base is None:

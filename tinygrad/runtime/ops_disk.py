@@ -32,7 +32,7 @@ class DiskAllocator(Allocator):
       dest[:] = src._buf()
 
   def _copyout_sharded(self, src:DiskBuffer, size:int, _get_free_buf:Callable, seg_len:int) -> Generator[Tuple[int, int, int, int], None, None]:
-    assert hasattr(DiskDevice, 'io_uring'), "function requires io uring support"
+    assert DiskDevice.io_uring is not None, "function requires io uring support"
 
     fd_offset = src.offset - (minor_offset := src.offset % mmap.PAGESIZE)
     processed_reqs_cnt, copied_in, next_read_offset, total_copy_size = 0, 0, 0, round_up(size + minor_offset, mmap.PAGESIZE)
@@ -69,8 +69,7 @@ class DiskDevice(Compiled):
   _tried_io_uring_init = False
 
   def __init__(self, device:str):
-    if not DiskDevice._tried_io_uring_init: self._iouring_setup()
-
+    self.io_uring: Optional[io_uring.struct_io_uring] = self._iouring_setup() if not DiskDevice._tried_io_uring_init else None
     self.size: Optional[int] = None
     self.count = 0
     super().__init__(device, DiskAllocator(self), None, None, None)
@@ -97,13 +96,13 @@ class DiskDevice(Compiled):
     if self.count == 0:
       if hasattr(self, 'fd'): os.close(self.fd)
       self.size = None
-  def _iouring_setup(self):
+  def _iouring_setup(self) -> Optional[io_uring.struct_io_uring]:
     DiskDevice._tried_io_uring_init = True
 
-    if platform.system() != 'Linux' or hasattr(sys, "getandroidapilevel"): return
+    if platform.system() != 'Linux' or hasattr(sys, "getandroidapilevel"): return None
 
     fd = libc.syscall(io_uring.NR_io_uring_setup, 4096, ctypes.byref(p:=io_uring.struct_io_uring_params()))
-    if fd < 0: return
+    if fd < 0: return None
 
     sq_ptr = libc.mmap(0, p.sq_off.array + p.sq_entries * 4, mmap.PROT_READ | mmap.PROT_WRITE, mmap.MAP_SHARED | MAP_POPULATE, fd, 0)
     cq_ptr = libc.mmap(0, p.cq_off.cqes + p.cq_entries * ctypes.sizeof(io_uring.struct_io_uring_cqe),
@@ -118,4 +117,4 @@ class DiskDevice(Compiled):
     cqdesc = io_uring.struct_io_uring_cq(khead=u32ptr(cq_ptr+p.cq_off.head), ktail=u32ptr(cq_ptr+p.cq_off.tail),
       kring_mask=u32ptr(sq_ptr+p.cq_off.ring_mask), cqes=ctypes.cast(cq_ptr+p.cq_off.cqes, ctypes.POINTER(io_uring.struct_io_uring_cqe)))
 
-    DiskDevice.io_uring = io_uring.struct_io_uring(ring_fd=fd, sq=sqdesc, cq=cqdesc) # type: ignore
+    return io_uring.struct_io_uring(ring_fd=fd, sq=sqdesc, cq=cqdesc) 
