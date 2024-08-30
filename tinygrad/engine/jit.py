@@ -10,7 +10,6 @@ from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.symbolic import Variable, sint, sym_infer
 from tinygrad.engine.realize import ExecItem, capturing, EmptyOp, ViewOp, BufferXfer, CompiledRunner, Runner, _internal_memory_planner
 from tinygrad.nn.state import get_parameters
-from dataclasses import dataclass
 from weakref import WeakKeyDictionary
 
 class GraphException(Exception): pass
@@ -98,10 +97,14 @@ class GraphRunner(Runner):  # pylint: disable=abstract-method
     super().__init__(colored(f"<batched {len(self.jit_cache)}>", "cyan"), jit_cache[0].prg.dname.split(":")[0],
                      op_estimate, mem_estimate, lds_estimate)
 
-  def updated_vars(self, var_vals):
+  def updated_vars(self, var_vals: Dict[Variable, int]):
     vals = [var_vals[v] for v in self.vars]
+    ret = []
+    # TODO: consider whether the generator -> list comp is doing the right thing here.
     for j, vidxs in self.var_vals_replace.items():
-      for i, v in enumerate(vidxs): yield j, i, vals[v]
+      for i, v in enumerate(vidxs):
+        ret.append((j, i, vals[v]))
+    return ret
 
   def updated_launch_dims(self, var_vals):
     dims = [tuple(sym_infer(s, var_vals) for s in dim) for dim in self.symbolic_dims]
@@ -128,24 +131,35 @@ class MultiGraphRunner(GraphRunner):  # pylint: disable=abstract-method
     return list({id(x):x for x in wait_nodes}.values())
 
 ReturnType = TypeVar('ReturnType')
-@dataclass
+# TODO: @dataclass over Generic is not working. Known issues: https://github.com/python/mypy/issues/13304
 class CapturedJit(Generic[ReturnType]):
-  ret: Any  # includes the Tensors or any other returned object
-  jit_cache: List[ExecItem]
-  input_replace: Dict[Tuple[int, int], int]
-  extra_view_inputs: List[Tuple[int, int, str, int, DType]]
-  expected_names: List[Union[int, str]]
-  expected_st_vars_dtype_device: List[Tuple[ShapeTracker, Tuple[Variable, ...], DType, str]]
-
-  def __reduce__(self):
-    return self.__class__, (self.ret, self.jit_cache, self.input_replace, self.extra_view_inputs,
-                            self.expected_names, self.expected_st_vars_dtype_device)
-
-  def __post_init__(self):
-    self._jit_cache: List[ExecItem] = self.jit_cache
-    self._input_replace: Dict[Tuple[int, int], int] = self.input_replace
+  def __init__(
+    self,
+    ret: Any,
+    jit_cache: List[ExecItem],
+    input_replace: Dict[Tuple[int, int], int],
+    extra_view_inputs: List[Tuple[int, int, str, int, DType]],
+    expected_names: List[Union[int, str]],
+    expected_st_vars_dtype_device: List[Tuple[ShapeTracker, Tuple[Variable, ...], DType, str]],
+  ):
+    self.ret = ret
+    self._jit_cache = jit_cache
+    self._input_replace = input_replace
+    self.extra_view_inputs = extra_view_inputs
+    self.expected_names = expected_names
+    self.expected_st_vars_dtype_device = expected_st_vars_dtype_device
     self._graphed = False
     self._clear_inputs()
+
+  def __reduce__(self):
+    return self.__class__, (
+      self.ret,
+      self._jit_cache,
+      self._input_replace,
+      self.extra_view_inputs,
+      self.expected_names,
+      self.expected_st_vars_dtype_device,
+    )
 
   def _clear_inputs(self):
     for (j,i) in self._input_replace.keys(): self._jit_cache[j].bufs[i] = None

@@ -117,4 +117,4 @@ class DiskDevice(Compiled):
     cqdesc = io_uring.struct_io_uring_cq(khead=u32ptr(cq_ptr+p.cq_off.head), ktail=u32ptr(cq_ptr+p.cq_off.tail),
       kring_mask=u32ptr(sq_ptr+p.cq_off.ring_mask), cqes=ctypes.cast(cq_ptr+p.cq_off.cqes, ctypes.POINTER(io_uring.struct_io_uring_cqe)))
 
-    return io_uring.struct_io_uring(ring_fd=fd, sq=sqdesc, cq=cqdesc) 
+    return io_uring.struct_io_uring(ring_fd=fd, sq=sqdesc, cq=cqdesc)
