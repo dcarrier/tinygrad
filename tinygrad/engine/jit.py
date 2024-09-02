@@ -197,7 +197,7 @@ def _prepare_jit_inputs(args, kwargs):
   return input_buffers, var_vals, names, st_vars_dtype_device
 
 class TinyJit(Generic[ReturnType]):
-  __deletable__ = ["_buffer_replace", "_jit_cache"]
+  __deletable__ = ("_buffer_replace", "_jit_cache")
 
   def __init__(self, fxn:Optional[Callable[..., ReturnType]], captured:Optional[CapturedJit]=None):
     assert fxn or captured, "need either a function or a CapturedJit"

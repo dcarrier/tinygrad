@@ -2,7 +2,7 @@
 from __future__ import annotations
 import dataclasses
 import time, math, itertools, functools, struct, sys, inspect, pathlib
-from contextlib import ContextDecorator
+from contextlib import contextmanager
 from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Dict, DefaultDict, cast, get_args, Set
 from collections import defaultdict
 import numpy as np
@@ -100,10 +100,13 @@ class Tensor:
   np.set_printoptions(precision=4)
   ```
   """
-  __slots__ = "lazydata", "requires_grad", "grad", "_ctx"
+
+  __slots__ = "lazydata", "requires_grad", "grad", "_ctx", "mode", "prev"
   __deletable__ = ('_ctx',)
   training: ClassVar[bool] = False
   no_grad: ClassVar[bool] = False
+  _seed: ClassVar[int] = int(time.time())
+  _rng_counter: ClassVar[Optional[Tensor]] = None
 
   def __init__(self, data:Union[None, ConstType, List, Tuple, LazyBuffer, np.ndarray, bytes, MultiLazyBuffer, Variable, pathlib.Path],
                device:Optional[Union[str, tuple, list]]=None, dtype:Optional[DTypeLike]=None, requires_grad:Optional[bool]=None):
@@ -156,15 +159,25 @@ class Tensor:
     else:
       self.lazydata = data if data.device == device else data.copy_to_device(device)
 
-  class train(ContextDecorator):
-    def __init__(self, mode:bool = True): self.mode = mode
-    def __enter__(self): self.prev, Tensor.training = Tensor.training, self.mode
-    def __exit__(self, exc_type, exc_value, traceback): Tensor.training = self.prev
+  # TODO: nested classes are not supported: https://mypyc.readthedocs.io/en/latest/differences_from_python.html#nested-classes
+  @contextmanager
+  def train(self, mode: bool = True):
+    self.mode = mode
+    self.prev, Tensor.training = Tensor.training, self.mode
+    try:
+      yield
+    finally:
+      Tensor.training = self.prev
 
-  class test(ContextDecorator):
-    def __init__(self, mode:bool = True): self.mode = mode
-    def __enter__(self): self.prev, Tensor.no_grad = Tensor.no_grad, self.mode
-    def __exit__(self, exc_type, exc_value, traceback): Tensor.no_grad = self.prev
+  # TODO: nested classes are not supported: https://mypyc.readthedocs.io/en/latest/differences_from_python.html#nested-classes
+  @contextmanager
+  def test(self, mode: bool = True):
+    self.mode = mode
+    self.prev, Tensor.no_grad = Tensor.no_grad, self.mode
+    try:
+      yield
+    finally:
+      Tensor.no_grad = self.prev
 
   def __repr__(self):
     return f"<Tensor {self.lazydata!r} on {self.device} with grad {(self.grad.lazydata if self.grad is not None else None)!r}>"
@@ -172,7 +185,8 @@ class Tensor:
   # Python has a non moving GC, so this should be okay
   def __hash__(self): return id(self)
 
-  def __bool__(self): raise TypeError("__bool__ on Tensor is not defined")
+  # TODO: I believe this may be causing this mypyc error: AssertionError: Only bool return supported for __bool__
+  # def __bool__(self): raise TypeError("__bool__ on Tensor is not defined")
 
   def __len__(self):
     if not self.shape: raise TypeError("len() of a 0-d tensor")
@@ -387,8 +401,6 @@ class Tensor:
     """
     return Tensor._metaop(MetaOps.EMPTY, argfix(*shape), **kwargs)
 
-  _seed: int = int(time.time())
-  _rng_counter: Optional[Tensor] = None
   @staticmethod
   def manual_seed(seed=0):
     """

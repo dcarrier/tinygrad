@@ -99,7 +99,9 @@ class ContextVar:
     instance = ContextVar._cache[key] = super().__new__(cls)
     instance.value, instance.key = getenv(key, default_value), key
     return instance
-  def __bool__(self): return bool(self.value)
+
+  # TODO: I believe this may be causing this mypyc error: AssertionError: Only bool return supported for __bool__
+  # def __bool__(self): return bool(self.value)
   def __ge__(self, x): return self.value >= x
   def __gt__(self, x): return self.value > x
   def __lt__(self, x): return self.value < x
@@ -164,7 +166,7 @@ class Profiling(contextlib.ContextDecorator):
               colored(f"<- {(scallers[0][1][2]/tottime)*100:3.0f}% {_format_fcn(scallers[0][0])}", "BLACK") if scallers else '')
 
 class ProfileLogger:
-  writers: int = 0
+  writers: ClassVar[int] = 0
   mjson: List[Dict] = []
   actors: Dict[Union[str, Tuple[str, str]], int] = {}
 
@@ -298,6 +300,13 @@ def cpu_objdump(lib):
 
 # *** ctypes helpers
 
+# TODO: https://github.com/python/mypy/issues/16687
+# TODO: https://github.com/mypyc/mypyc/issues/1032
+class CStruct(ctypes.Structure):
+  def __init__(self, fields):
+    self._pack_, self._fields_ = 1, fields
+
+
 # TODO: make this work with read only memoryviews (if possible)
 def from_mv(mv:memoryview, to_type=ctypes.c_char):
   return ctypes.cast(ctypes.addressof(to_type.from_buffer(mv)), ctypes.POINTER(to_type * len(mv))).contents
@@ -306,9 +315,7 @@ def mv_address(mv:memoryview): return ctypes.addressof(ctypes.c_char.from_buffer
 def to_char_p_p(options: List[bytes], to_type=ctypes.c_char): return (ctypes.POINTER(to_type) * len(options))(*[ctypes.cast(ctypes.create_string_buffer(o), ctypes.POINTER(to_type)) for o in options])  # noqa: E501
 @functools.lru_cache(maxsize=None)
 def init_c_struct_t(fields: Tuple[Tuple[str, ctypes._SimpleCData], ...]):
-  class CStruct(ctypes.Structure):
-    _pack_, _fields_ = 1, fields
-  return CStruct
+  return CStruct(fields)
 def init_c_var(ctypes_var, creat_cb): return (creat_cb(ctypes_var), ctypes_var)[1]
 def flat_mv(mv:memoryview): return mv if len(mv) == 0 else mv.cast("B", shape=(mv.nbytes,))
 
