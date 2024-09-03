@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import List, Tuple, Callable, Optional, ClassVar, Type, Union, Sequence, Dict, DefaultDict, cast, get_args, Set
 from collections import defaultdict
 import numpy as np
+from mypy_extensions import mypyc_attr
 
 from tinygrad.dtype import DType, DTypeLike, dtypes, ImageDType, ConstType, least_upper_float, least_upper_dtype, sum_acc_dtype, to_dtype
 from tinygrad.helpers import argfix, make_pair, flatten, prod, all_int, round_up, merge_dicts, argsort, getenv, get_shape, fully_flatten, dedup
@@ -20,6 +21,8 @@ from tinygrad.engine.schedule import ScheduleItem, create_schedule_with_vars
 
 # **** start with two base classes, Tensor and Function ****
 
+# TODO: not fully sure why this works yet.
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Function:
   def __init__(self, device:Union[str, Tuple[str, ...]], *tensors:Tensor, metadata:Optional[Metadata]=None):
     self.device = device
@@ -34,9 +37,13 @@ class Function:
   @classmethod
   def apply(fxn:Type[Function], *x:Tensor, **kwargs) -> Tensor:
     ctx = fxn(x[0].device, *x, metadata=_METADATA.get())
-    ret = Tensor.__new__(Tensor)
-    ret.lazydata, ret.requires_grad, ret.grad = ctx.forward(*[t.lazydata for t in x], **kwargs), ctx.requires_grad, None
-    ret._ctx = ctx if ctx.requires_grad and not Tensor.no_grad else None  # used by autograd engine
+    ret = Tensor(ctx.forward(*[t.lazydata for t in x], **kwargs), device=ctx.device, requires_grad=ctx.requires_grad)
+    if ctx.requires_grad and not Tensor.no_grad:
+      ret._ctx = ctx  # used by autograd engine
+    # TODO: need to get this working with the __new__ method. I don't have another way to justify it.
+    # ret = Tensor.__new__(Tensor)
+    # ret.lazydata, ret.requires_grad, ret.grad = ctx.forward(*[t.lazydata for t in x], **kwargs), ctx.requires_grad, None
+    # ret._ctx = ctx if ctx.requires_grad and not Tensor.no_grad else None  # used by autograd engine
     return ret
 
 import tinygrad.function as F
@@ -382,9 +389,13 @@ class Tensor:
   @staticmethod
   def _metaop(op, shape, device:Optional[Union[Tuple[str, ...], str]]=None, dtype:Optional[DTypeLike]=None, arg=None, **kwargs):
     if isinstance(device, tuple):
-      return Tensor(MultiLazyBuffer([LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(d), arg) \
-                                      for d in device], None), device, dtype, **kwargs)
-    return Tensor(LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(device), arg), device, dtype, **kwargs)
+      return Tensor(
+        MultiLazyBuffer([LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(d), arg) for d in device], None),
+        device=device,
+        dtype=dtype,
+        **kwargs,
+      )
+    return Tensor(LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(device), arg), device=device, dtype=dtype, **kwargs)
 
   @staticmethod
   def empty(*shape, **kwargs):
@@ -399,7 +410,11 @@ class Tensor:
     print(t.shape)
     ```
     """
-    return Tensor._metaop(MetaOps.EMPTY, argfix(*shape), **kwargs)
+    # TODO: I am not sure how to handle kwargs as overrides to named parameters with mypy yet. For now we hack.
+    dtype = kwargs.get("dtype", None)
+    device = kwargs.get("device", None)
+    arg = kwargs.get("arg", None)
+    return Tensor._metaop(MetaOps.EMPTY, argfix(*shape), device=device, dtype=dtype, arg=arg, **kwargs)
 
   @staticmethod
   def manual_seed(seed=0):
@@ -682,8 +697,10 @@ class Tensor:
     print(Tensor.uniform(2, 3, low=2, high=10).numpy())
     ```
     """
-    dtype = kwargs.pop("dtype", dtypes.default_float)
-    return ((high-low) * Tensor.rand(*shape, **kwargs)).cast(dtype) + low
+    # TODO: I am not sure how to handle kwargs as overrides to named parameters with mypy yet. For now we hack.
+    dtype = kwargs.get("dtype", dtypes.default_float)
+    device = kwargs.get("device", None)
+    return ((high - low) * Tensor.rand(*shape, device=device, dtype=dtype, **kwargs)).cast(dtype) + low
 
   @staticmethod
   def scaled_uniform(*shape, **kwargs) -> Tensor:
