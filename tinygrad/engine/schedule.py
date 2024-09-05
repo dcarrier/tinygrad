@@ -252,6 +252,8 @@ def _recurse_lb(buf:LazyBuffer, realizes:Dict[LazyBuffer, None], allbufs:Dict[La
                 double_reduces:Dict[LazyBuffer, None], scheduled=False) -> None:
   """recursively search the entire graph for all LazyBuffers, insert realizes after expands"""
   if buf in allbufs or buf.base.realized is not None: return
+  # TODO: for some reason env vars arent being read in compiled mode. Everything is force enabled.
+  GRAPH = False
   if GRAPH: log_lazybuffer(buf, scheduled)
   # check if we need to realize views
   if buf is not buf.base:
@@ -440,6 +442,8 @@ def _graph_schedule(outs:List[LazyBuffer], seen:Set[LazyBuffer]) -> \
       graph[lsi].append(assign)
       in_degree[assign] += 1
 
+  # TODO: for some reason env vars arent being read in compiled mode. Everything is force enabled.
+  SAVE_SCHEDULE = 0
   if SAVE_SCHEDULE:
     def _save():
       print(f"saving {len(SCHEDULES)} schedule graphs to", fp:=getenv("SAVE_SCHEDULE_PATH", "schedule.pkl"))
@@ -464,6 +468,8 @@ def create_schedule_with_vars(outs:List[LazyBuffer], seen:Optional[Set[LazyBuffe
   while queue:
     lsi = queue.popleft()
     for buf in lsi.outputs: seen.add(buf)
+    # TODO: for some reason env vars arent being read in compiled mode. Everything is force enabled.
+    GRAPH = False
     if GRAPH:
       kernel_number += 1
       for out in lsi.outputs: realized_lazybuffer(out, kernel_number)

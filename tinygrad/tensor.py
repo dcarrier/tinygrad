@@ -3217,10 +3217,12 @@ class Tensor:
   def __le__(self, x) -> Tensor:
     return (self > x).logical_not()
 
-  def __ne__(self, x) -> Tensor:
+  # TODO: Return type "Tensor" of "__ne__" incompatible with return type "bool" in supertype "object"  [override]
+  def __ne__(self, x) -> Tensor:  # type: ignore[override]
     return F.Neq.apply(*self._broadcasted(x))  # type: ignore[override]
 
-  def __eq__(self, x) -> Tensor:
+  # TODO: Return type "Tensor" of "__eq__" incompatible with return type "bool" in supertype "object"  [override]
+  def __eq__(self, x) -> Tensor:  # type: ignore[override]
     return (self != x).logical_not()  # type: ignore[override]
 
   # ***** functional nn ops *****
