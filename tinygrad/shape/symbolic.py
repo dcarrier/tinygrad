@@ -88,8 +88,8 @@ class Node:
     mul_groups: Dict[Node, int] = {}
     num_node_sum = 0
     for node in SumNode(nodes).flat_components:
-      if isinstance(node, NumNode): num_node_sum += node.b
-      elif isinstance(node, MulNode): mul_groups[node.a] = mul_groups.get(node.a, 0) + node.b
+      if node.__class__ is NumNode: num_node_sum += node.b
+      elif node.__class__ is MulNode: mul_groups[node.a] = mul_groups.get(node.a, 0) + node.b
       else: mul_groups[node] = mul_groups.get(node, 0) + 1
     new_nodes = [MulNode(a, b_sum) if b_sum != 1 else a for a, b_sum in mul_groups.items() if b_sum != 0]
     if num_node_sum: new_nodes.append(NumNode(num_node_sum))
@@ -120,7 +120,7 @@ class Variable(Node):
     self.expr, self.min, self.max = expr, nmin, nmax
     self._val: Optional[int] = None
   @property
-  def val(self) -> int:
+  def val(self):
     assert self._val is not None, f"Variable isn't bound, can't access val of {self}"
     return self._val
   def bind(self, val):
@@ -286,7 +286,7 @@ class SumNode(RedNode):
   # recursively expand sumnode components
   # TODO: can remove this if there's no SumNode inside SumNode
   @property
-  def flat_components(self) -> List[Union[MulNode|NumNode|Node]]: return [y for x in self.nodes for y in (x.flat_components if isinstance(x, SumNode) else [x])]
+  def flat_components(self): return [y for x in self.nodes for y in (x.flat_components if isinstance(x, SumNode) else [x])]
 
 class AndNode(RedNode):
   def get_bounds(self) -> Tuple[int, sint]: return min([x.min for x in self.nodes]), max([x.max for x in self.nodes])
