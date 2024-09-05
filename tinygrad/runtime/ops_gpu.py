@@ -77,8 +77,7 @@ class CLAllocator(LRUAllocator):
     self.device.synchronize()
 
 class CLDevice(Compiled):
-  device_ids: Optional[List[ctypes._Pointer[cl.struct__cl_device_id]]] = None  # this is global and only initted once
-
+  device_ids = None                 # this is global and only initted once
   def __init__(self, device:str=""):
     if CLDevice.device_ids is None:
       check(cl.clGetPlatformIDs(0, None, num_platforms := ctypes.c_uint32()))
@@ -89,16 +88,12 @@ class CLDevice(Compiled):
       if DEBUG >= 1: print(f"CLDevice: got {num_platforms.value} platforms and {num_devices.value} devices")
       CLDevice.device_ids = init_c_var((cl.cl_device_id * num_devices.value)(), lambda x: check(cl.clGetDeviceIDs(platform_ids[0], device_type, num_devices, x, None)))  # noqa: E501
 
-    self.device_id: ctypes._Pointer[cl.struct__cl_device_id] = CLDevice.device_ids[0 if ":" not in device else int(device.split(":")[1])]
+    self.device_id = CLDevice.device_ids[0 if ":" not in device else int(device.split(":")[1])]
     self.device_name = (cl.clGetDeviceInfo(self.device_id, cl.CL_DEVICE_NAME, 256, buf := ctypes.create_string_buffer(256), None), buf.value.decode())[1]  # noqa: E501
     self.driver_version = (cl.clGetDeviceInfo(self.device_id, cl.CL_DRIVER_VERSION, 256, buf := ctypes.create_string_buffer(256), None), buf.value.decode())[1]  # noqa: E501
     if DEBUG >= 1: print(f"CLDevice: opening {self.device_name} with version {self.driver_version}")
-    self.context: ctypes._NamedFuncPointer = checked(
-      cl.clCreateContext(None, 1, self.device_id, cl.clCreateContext.argtypes[3](), None, status := ctypes.c_int32()), status
-    )
-    self.queue: ctypes._NamedFuncPointer = checked(
-      cl.clCreateCommandQueue(self.context, self.device_id, cl.CL_QUEUE_PROFILING_ENABLE, status), status
-    )
+    self.context = checked(cl.clCreateContext(None, 1, self.device_id, cl.clCreateContext.argtypes[3](), None, status := ctypes.c_int32()), status)
+    self.queue = checked(cl.clCreateCommandQueue(self.context, self.device_id, cl.CL_QUEUE_PROFILING_ENABLE, status), status)
     self.pending_copyin: List[memoryview] = []
     self.device_exts = (cl.clGetDeviceInfo(self.device_id, cl.CL_DEVICE_EXTENSIONS, 4096, ctypes.byref(buf := ctypes.create_string_buffer(4096)), ctypes.byref(total := ctypes.c_size_t())), ctypes.string_at(buf, size=total.value).decode())[1]  # noqa: E501
 
