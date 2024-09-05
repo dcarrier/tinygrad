@@ -478,9 +478,9 @@ class Tensor:
     ```
     """
     # TODO: I am not sure how to handle kwargs as overrides to named parameters with mypy yet. For now we hack.
-    dtype = kwargs.get("dtype", None)
-    device = kwargs.get("device", None)
-    arg = kwargs.get("arg", None)
+    dtype = kwargs.pop("dtype", None)
+    device = kwargs.pop("device", None)
+    arg = kwargs.pop("arg", None)
     return Tensor._metaop(MetaOps.EMPTY, argfix(*shape), device=device, dtype=dtype, arg=arg, **kwargs)
 
   @staticmethod
@@ -775,8 +775,8 @@ class Tensor:
     ```
     """
     # TODO: I am not sure how to handle kwargs as overrides to named parameters with mypy yet. For now we hack.
-    dtype = kwargs.get("dtype", dtypes.default_float)
-    device = kwargs.get("device", None)
+    dtype = kwargs.pop("dtype", dtypes.default_float)
+    device = kwargs.pop("device", None)
     return ((high - low) * Tensor.rand(*shape, device=device, dtype=dtype, **kwargs)).cast(dtype) + low
 
   @staticmethod
