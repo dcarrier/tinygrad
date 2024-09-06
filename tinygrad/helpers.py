@@ -306,7 +306,6 @@ class CStruct(ctypes.Structure):
   def __init__(self, fields):
     self._pack_, self._fields_ = 1, fields
 
-
 # TODO: make this work with read only memoryviews (if possible)
 def from_mv(mv:memoryview, to_type=ctypes.c_char):
   return ctypes.cast(ctypes.addressof(to_type.from_buffer(mv)), ctypes.POINTER(to_type * len(mv))).contents
