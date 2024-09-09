@@ -722,7 +722,10 @@ class Tensor:
     ```
     """
     # https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-    src = Tensor.rand((2, *argfix(*shape)), **{**kwargs, "dtype": dtypes.float32})
+    # TODO: I am not sure how to handle kwargs as overrides to named parameters with mypy yet. For now we hack.
+    dtype = kwargs.pop("dtype", dtypes.float32)
+    device = kwargs.pop("device", None)
+    src = Tensor.rand((2, *argfix(*shape)), device=device, dtype=dtype, **kwargs)
     return src[0].mul(2 * math.pi).cos().mul((1 - src[1]).log().mul(-2).sqrt()).cast(dtype or dtypes.default_float)
 
   @staticmethod
