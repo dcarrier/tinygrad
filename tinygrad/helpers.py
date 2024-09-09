@@ -100,8 +100,7 @@ class ContextVar:
     instance.value, instance.key = getenv(key, default_value), key
     return instance
 
-  # TODO: I believe this may be causing this mypyc error: AssertionError: Only bool return supported for __bool__
-  # def __bool__(self): return bool(self.value)
+  def __bool__(self): return bool(self.value)
   def __ge__(self, x): return self.value >= x
   def __gt__(self, x): return self.value > x
   def __lt__(self, x): return self.value < x
