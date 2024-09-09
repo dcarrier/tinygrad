@@ -99,7 +99,6 @@ class ContextVar:
     instance = ContextVar._cache[key] = super().__new__(cls)
     instance.value, instance.key = getenv(key, default_value), key
     return instance
-
   def __bool__(self): return bool(self.value)
   def __ge__(self, x): return self.value >= x
   def __gt__(self, x): return self.value > x
