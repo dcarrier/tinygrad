@@ -396,12 +396,8 @@ class Tensor:
   @staticmethod
   def _metaop(op, shape, device:Optional[Union[Tuple[str, ...], str]]=None, dtype:Optional[DTypeLike]=None, arg=None, **kwargs):
     if isinstance(device, tuple):
-      return Tensor(
-        MultiLazyBuffer([LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(d), arg) for d in device], None),
-        device=device,
-        dtype=dtype,
-        **kwargs,
-      )
+            return Tensor(MultiLazyBuffer([LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(d), arg) \
+                                      for d in device], None), device=device, dtype=dtype, **kwargs)
     return Tensor(LazyBuffer.metaop(op, shape, dtype or dtypes.default_float, Device.canonicalize(device), arg), device=device, dtype=dtype, **kwargs)
 
   @staticmethod
