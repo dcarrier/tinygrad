@@ -70,7 +70,6 @@ class Runner:
     self.first_run, self.display_name, self.dname, self.op_estimate, self.mem_estimate, self.lds_estimate = \
       True, display_name, dname, op_estimate, mem_estimate, mem_estimate if lds_estimate is None else lds_estimate
   @property
-  # TODO(dcarrier): I need to end up fixing this so it returns MetalDevice
   def device(self) -> Any: return Device[self.dname]
   def exec(self, rawbufs:List[Buffer], var_vals:Optional[Dict[Variable, int]]=None) -> Optional[float]:
     return self(rawbufs, {} if var_vals is None else var_vals)
