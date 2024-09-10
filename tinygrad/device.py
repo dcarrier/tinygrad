@@ -7,11 +7,14 @@ import importlib, inspect, functools, pathlib, os, ctypes, atexit, time, context
 from tinygrad.helpers import SAVE_SCHEDULE, getenv, diskcache_get, diskcache_put, DEBUG, GlobalCounters, flat_mv, from_mv, ProfileLogger, PROFILE
 from tinygrad.dtype import DType, ImageDType
 from tinygrad.renderer import Renderer
+import pkg_resources
+from mypy_extensions import mypyc_attr
 
 # **************** Device ****************
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class _Device:
-  def __init__(self) -> None: self._devices: List[str] = [x.stem[len("ops_"):].upper() for x in (pathlib.Path(__file__).parent/"runtime").iterdir() if x.stem.startswith("ops_")]  # noqa: E501
+  def __init__(self) -> None:
+    self._devices: List[str] = [x.stem[len("ops_"):].upper() for x in (pathlib.Path(pkg_resources.resource_stream("tinygrad", 'device.py').name).parent/"runtime").iterdir() if x.stem.startswith("ops_")]  # noqa: E501
   @functools.lru_cache(maxsize=None)  # this class is a singleton, pylint: disable=method-cache-max-size-none
   def _canonicalize(self, device:str) -> str: return (device.split(":", 1)[0].upper() + ((":"+device.split(":", 1)[1]) if ':' in device else '')).replace(":0", "")   # noqa: E501
   # NOTE: you can't cache canonicalize in case Device.DEFAULT changes
@@ -40,7 +43,7 @@ class _Device:
 Device = _Device()
 
 # **************** Buffer + Allocators ****************
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 @dataclass(frozen=True, eq=True)
 class BufferOptions:
   image: Optional[ImageDType] = None
@@ -48,7 +51,7 @@ class BufferOptions:
   cpu_access: bool = False
   host: bool = False
   nolru: bool = False
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Buffer:
   def __init__(self, device:str, size:int, dtype:DType, opaque:Any=None, options:Optional[BufferOptions]=None,
                initial_value:Optional[bytes]=None, lb_refcount=0, base:Optional[Buffer]=None, offset:int=0, preallocate=False):
@@ -129,6 +132,7 @@ class Buffer:
     return Buffer(self.device, size, dtype, base=self, offset=offset)
 
 # TODO: size, dest, src are the same type. can we enforce this?
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Allocator:
   def alloc(self, size:int, options:Optional[BufferOptions]=None):
     assert not isinstance(size, int) or size > 0, f"alloc size must be positve, getting {size}"
@@ -140,6 +144,7 @@ class Allocator:
   def copyin(self, dest, src:memoryview): raise NotImplementedError("need copyin")
   def copyout(self, dest:memoryview, src): raise NotImplementedError("need copyout")
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class LRUAllocator(Allocator):  # pylint: disable=abstract-method
   """
   The LRU Allocator is responsible for caching buffers.
@@ -160,6 +165,7 @@ class LRUAllocator(Allocator):  # pylint: disable=abstract-method
     if getenv("LRU", 1) and (options is None or not options.nolru): self.cache[(size, options)].append(opaque)
     else: super().free(opaque, size, options)
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class _MallocAllocator(LRUAllocator):
   def _alloc(self, size:int, options:BufferOptions): return (ctypes.c_uint8 * size)()
   def as_buffer(self, src) -> memoryview: return flat_mv(memoryview(src))
@@ -172,7 +178,7 @@ MallocAllocator = _MallocAllocator()
 # **************** for Compiled Devices ****************
 
 class CompileError(Exception): pass
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Compiler:
   def __init__(self, cachekey:Optional[str]=None): self.cachekey = None if getenv("DISABLE_COMPILER_CACHE") else cachekey
   def compile(self, src:str) -> bytes: raise NotImplementedError("need a compile function")
@@ -183,6 +189,7 @@ class Compiler:
       if self.cachekey is not None: diskcache_put(self.cachekey, src, lib)
     return lib
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Compiled:
   def __init__(self, device:str, allocator:Allocator, renderer:Optional[Renderer], compiler:Optional[Compiler], runtime, graph=None):
     self.dname, self.allocator, self.compiler, self.runtime, self.graph = device, allocator, compiler or Compiler(), runtime, graph
@@ -215,6 +222,7 @@ def hcq_command(func):
     return self
   return __wrapper
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HWCommandQueue:
   """
   A base class for hardware command queues in the HCQ (Hardware Command Queue) API.
@@ -319,6 +327,7 @@ class HWCommandQueue:
     return self
   def _submit(self, device:HCQCompiled): raise NotImplementedError("backend should overload this function")
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HWComputeQueue(HWCommandQueue):
   @hcq_command
   def memory_barrier(self):
@@ -356,6 +365,7 @@ class HWComputeQueue(HWCommandQueue):
     return self
   def _update_exec(self, cmd_idx, global_size, local_size): raise NotImplementedError("backend should overload this function")
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HWCopyQueue(HWCommandQueue):
   @hcq_command
   def copy(self, dest:HCQBuffer, src:HCQBuffer, copy_size:int):
@@ -384,6 +394,7 @@ class HWCopyQueue(HWCommandQueue):
     return self
   def _update_copy(self, cmd_idx, dest, src): raise NotImplementedError("backend should overload this function")
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HCQSignal:
   def __init__(self, value:int=0): self._set_value(value)
 
@@ -440,11 +451,12 @@ def hcq_profile(dev, enabled, desc, queue_type=None, queue=None):
 
     if enabled and PROFILE: dev.sig_prof_records.append((st, en, desc, queue_type is dev.hw_copy_queue_t))
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HCQArgsState:
   def __init__(self, ptr:int, prg:HCQProgram, bufs:Tuple[HCQBuffer, ...], vals:Tuple[int, ...]=()): self.ptr, self.prg = ptr, prg
   def update_buffer(self, index:int, buf:HCQBuffer): raise NotImplementedError("need update_buffer")
   def update_var(self, index:int, val:int): raise NotImplementedError("need update_var")
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HCQProgram:
   def __init__(self, args_state_t:Type[HCQArgsState], device:HCQCompiled, name:str, kernargs_alloc_size:int):
     self.args_state_t, self.device, self.name, self.kernargs_alloc_size = args_state_t, device, name, kernargs_alloc_size
@@ -488,7 +500,7 @@ class HCQProgram:
 
     if wait: self.device.timeline_signal.wait(self.device.timeline_value - 1)
     return (float(sig_en.timestamp - sig_st.timestamp) / 1e6) if wait else None
-
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HCQCompiled(Compiled):
   """
   A base class for devices compatible with the HCQ (Hardware Command Queue) API.
@@ -607,9 +619,11 @@ class HCQCompiled(Compiled):
     self.timeline_signal.value = 0
     cast(HCQAllocator, self.allocator).b_timeline = [0] * len(cast(HCQAllocator, self.allocator).b)
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 # Protocol for hcq compatible allocators for allocated buffers to contain VA address and it's size.
 class HCQBuffer(Protocol): va_addr:int; size:int # noqa: E702
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class HCQAllocator(LRUAllocator): # pylint: disable=abstract-method
   """
   A base allocator class compatible with the HCQ (Hardware Command Queue) API.

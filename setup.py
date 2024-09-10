@@ -26,7 +26,7 @@ setup(name='tinygrad',
                         "pyobjc-framework-Metal; platform_system=='Darwin'",
                         "pyobjc-framework-libdispatch; platform_system=='Darwin'"],
       python_requires='>=3.8',
-      ext_modules=mypycify(["tinygrad/engine/realize.py", "tinygrad/tensor.py"], verbose=True),
+      ext_modules=mypycify(["tinygrad/engine/realize.py", "tinygrad/device.py", "tinygrad/tensor.py"], verbose=True),
       extras_require={
         'llvm': ["llvmlite"],
         'arm': ["unicorn"],
