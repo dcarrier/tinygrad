@@ -71,7 +71,7 @@ class Buffer:
   @property
   def base(self) -> Buffer: return self._base if self._base is not None else self
   @property
-  def lb_refcount(self): return self.base._lb_refcount
+  def lb_refcount(self) -> int: return self.base._lb_refcount
   def ref(self, cnt): self.base._lb_refcount += cnt
   def is_allocated(self) -> bool: return hasattr(self, '_buf')
   def ensure_allocated(self) -> Buffer: return self.allocate() if not hasattr(self, '_buf') else self
@@ -96,7 +96,7 @@ class Buffer:
       self.copyout(memoryview(buf))
     return self.__class__, (self.device, self.size, self.dtype, None, self.options, buf, self.lb_refcount)
   @property
-  def nbytes(self): return self.size*self.dtype.itemsize
+  def nbytes(self) -> int: return self.size*self.dtype.itemsize
   def __del__(self):
     if not hasattr(self, '_buf'): return
     if self._base is None:
@@ -145,7 +145,7 @@ class LRUAllocator(Allocator):  # pylint: disable=abstract-method
   The LRU Allocator is responsible for caching buffers.
   It ensures that buffers are not freed until it is absolutely necessary, optimizing performance.
   """
-  def __init__(self): self.cache: Dict[Tuple[int, Optional[BufferOptions]], Any] = defaultdict(list)
+  def __init__(self: LRUAllocator): self.cache: Dict[Tuple[int, Optional[BufferOptions]], Any] = defaultdict(list)
   def alloc(self, size:int, options:Optional[BufferOptions]=None):
     if len(c := self.cache[(size, options)]): return c.pop()
     try: return super().alloc(size, options)
@@ -496,6 +496,7 @@ class HCQCompiled(Compiled):
   devices: List[HCQCompiled] = []
   gpu2cpu_copy_time_diff: decimal.Decimal = decimal.Decimal('nan')
   gpu2cpu_compute_time_diff: decimal.Decimal = decimal.Decimal('nan')
+  __deletable__ = ("profile_logger",)
 
   def __init__(self, device:str, allocator:Allocator, renderer:Renderer, compiler:Compiler, runtime, signal_t:Type[HCQSignal],
                comp_queue_t:Type[HWComputeQueue], copy_queue_t:Optional[Type[HWCopyQueue]], timeline_signals:Tuple[HCQSignal, HCQSignal]):
