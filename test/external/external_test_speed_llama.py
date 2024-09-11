@@ -4,7 +4,7 @@ from examples.llama import Transformer, MODEL_PARAMS
 from tinygrad.tensor import Tensor
 from tinygrad import Device
 from tinygrad.nn.state import get_state_dict
-from tinygrad.device import Allocator
+from tinygrad.device import Allocator, Compiler
 from tinygrad.engine.realize import method_cache
 from tinygrad.helpers import Profiling
 
@@ -44,7 +44,11 @@ class TestLLaMASpeed(unittest.TestCase):
     run_llama("codegen(1)")
 
     # test no compiler use for this
-    Device[Device.DEFAULT].compiler = None
+    # TODO: check if this is doing what we expect instead of setting to None.
+    # it isn't type safe to set to None as of now. But changing to Optional
+    # requires more substantial code changes.
+    # If this works, make sure to change this in other test cases.
+    Device[Device.DEFAULT].compiler = Compiler()
     run_llama("methodcache", False)
     with Profiling(sort='time', frac=0.1, fn="/tmp/llama.prof", ts=5):
       run_llama("profile", False)
