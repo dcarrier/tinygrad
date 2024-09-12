@@ -630,112 +630,113 @@ class Kernel:
     return name+colored(suffix, 'BLACK')
 
   def get_optimized_ast(self) -> UOp:
-    # set the shapetrackers to the optimized ones, fixup reduceop
-    # transformed to the final UOp
-    @functools.lru_cache(None)
-    def fixup_ast(op:UOp, apply_to_st=None) -> UOp:
-      arg = op.arg
-      if op.op in BUFFER_UOPS:
-        # for locals, we use the ShapeTracker that's in the srcs
-        st = op.st_arg if op.src[0].op is UOps.DEFINE_LOCAL else self.sts[self.bufs.index(op)]
-        st_uop = (st if apply_to_st is None else apply_to_st(st)).to_uop()
-        if op.op is UOps.CONST: return replace(op, src=(st_uop,))
-        if op.op is UOps.STORE: return replace(op, src=(op.src[0], st_uop, fixup_ast(op.src[2], apply_to_st)))
-        return replace(op, src=(op.src[0], st_uop, *[fixup_ast(x, apply_to_st) for x in op.src[2:]]))
-      if op.op is UOps.REDUCE_AXIS:
-        reduce_idx = len(self.bufs) + self.reduceops.index(op)*2
-        alu_op: BinaryOps = op.arg[0]
-        axis = tuple(i for i in range(self.first_reduce+self.group_for_reduces, self.shape_len)
+    return self.fixup_ast(self.ast)
+
+  # set the shapetrackers to the optimized ones, fixup reduceop
+  # transformed to the final UOp
+  @functools.lru_cache(None)
+  def fixup_ast(self, op:UOp, apply_to_st=None) -> UOp:
+    arg = op.arg
+    if op.op in BUFFER_UOPS:
+      # for locals, we use the ShapeTracker that's in the srcs
+      st = op.st_arg if op.src[0].op is UOps.DEFINE_LOCAL else self.sts[self.bufs.index(op)]
+      st_uop = (st if apply_to_st is None else apply_to_st(st)).to_uop()
+      if op.op is UOps.CONST: return replace(op, src=(st_uop,))
+      if op.op is UOps.STORE: return replace(op, src=(op.src[0], st_uop, self.fixup_ast(op.src[2], apply_to_st)))
+      return replace(op, src=(op.src[0], st_uop, *[self.fixup_ast(x, apply_to_st) for x in op.src[2:]]))
+    if op.op is UOps.REDUCE_AXIS:
+      reduce_idx = len(self.bufs) + self.reduceops.index(op)*2
+      alu_op: BinaryOps = op.arg[0]
+      axis = tuple(i for i in range(self.first_reduce+self.group_for_reduces, self.shape_len)
+                  if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i])
+      if op in self.bufs_for_tensor_core and (tc := self.tensor_core):
+        rsrc = op.src[0]
+        if rsrc.op is UOps.CAST: rsrc = rsrc.src[0]
+        assert rsrc.op is UOps.ALU and rsrc.arg is BinaryOps.MUL
+
+        def fix_st(warp_dims, tcd_dims, tcd_expand, pattern_1, pattern_2, st1):
+          wd, tcd = self.global_dims, self.first_upcast
+          assert st1.shape[wd:wd+len(warp_dims)] == warp_dims, f"warp dims wrong: {st1.shape[wd:wd+len(warp_dims)]=} != {warp_dims=}"
+          assert st1.shape[tcd:tcd+len(tcd_dims)] == tcd_dims, f"tcd dims wrong: {st1.shape[tcd:tcd+len(tcd_dims)]=} != {tcd_dims=}"
+          new_shape = st1.shape[:tcd] + tcd_expand + st1.shape[tcd+len(tcd_dims):]  # expand the tcd
+          permaxis = list(range(wd)) + [y + (wd if x == 0 else tcd) for x,y in pattern_1] + list(range(wd+len(warp_dims), tcd)) + \
+                                        [y + (wd if x == 0 else tcd) for x,y in pattern_2] + list(range(tcd+len(tcd_expand), len(new_shape)))
+          return st1.reshape(new_shape).simplify().permute(tuple(permaxis)).reshape(st1.shape).simplify()
+
+        threads = prod(t[1] for t in tc.threads)
+        if self.opts.device in {"AMD", "HIP"}:
+          reduce_axes, upcast_axes = [0], [[(0, 16)], [(0, 16)], [(1, 8)]]
+          # https://gpuopen.com/learn/wmma_on_rdna3/
+          fix_st1 = functools.partial(fix_st, (8,2,2), (16,8), (16,2,4), ((1,2), (0,2), (1,1), (0,1)), ((1,0), (0,0)))
+          fix_st2 = None
+        elif self.opts.device == "METAL":
+          reduce_axes, upcast_axes = [0], [[(1, 2)], [(1, 2)], [(1, 2)]]
+          fix_st1 = functools.partial(fix_st, (2,4,2,2), (8,2), (2,2,2,2), ((1,1), (0,1), (1,0), (0,3)), ((0,0), (0,2), (1,3), (1,2)))
+          fix_st2 = functools.partial(fix_st, (2,4,2,2), (8,2), (2,2,2,2), ((0,0), (1,1), (1,2), (0,2), (1,0)), ((0,1), (0,3), (1,3)))
+        elif self.opts.device == "CLANG":
+          reduce_axes, upcast_axes = [], [[(1,tc.dims[0])],[(0,tc.dims[1])],[(1, tc.dims[2]), (0, tc.dims[2])]]
+          threads, fix_st1, fix_st2 = threads // tc.dims[2], None, None
+        elif self.opts.device in {"CUDA", "NV"}:
+          reduce_axes, upcast_axes = [0, 1], [[(0, 8)], [(2, 2), (3, 2)], [(2, 2), (3, 2)]]
+          # https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-float
+          fix_st1 = functools.partial(fix_st, (2,2,2,2,2), (8,2,2,2), (2,2,2,2,2,2),
+            ((1,1), (1,0), (0,2), (0,3), (0,4)), ((1,3), (1,4), (1,2), (0,0), (0,1), (1,5)))
+          fix_st2 = functools.partial(fix_st, (2,2,2,2,2), (8,2,2,2), (2,2,2,2,2,2),
+            ((1,1), (1,0), (1,5), (0,0), (0,1)), ((0,4), (0,2), (1,4), (0,3), (1,3), (1,2)))
+        elif self.opts.suffix == "INTEL":
+          reduce_axes, upcast_axes = [0], [[(0, 16)], [(0, 16)], [(1, 8)]]
+          fix_st1 = functools.partial(fix_st, (8,), (16,8), (8,2,8), ((1,0),), ((1,2), (1,1), (0,0)))
+          fix_st2 = None
+        else:
+          raise RuntimeError("unsupported device for tensor cores")
+
+        assert apply_to_st is None, "double tensor core? not supported"
+        wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, threads,
+                    tuple(tuple((self.first_upcast+ax, sz) for ax, sz in up) for up in upcast_axes),
+                    tuple(self.first_upcast+ax for ax in reduce_axes))
+        if self.use_tensor_cores >= 2:
+          if self.use_tensor_cores == 3:
+            # TC=3, emulate the warp addressing with locals
+            ex_shape = tuple(1 if i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else s \
+                            for i,s in enumerate(self.full_shape))
+            srcs = []
+            for i,(src,fix_st_fxn) in enumerate(zip(rsrc.src, [fix_st1, fix_st2])):
+              st_load = [self.sts[self.bufs.index(op)].real_strides() for op in rsrc.parents if op.op is UOps.LOAD]
+              local_shape = tuple(s if max(cast(int, x[i]) for x in st_load) != 0 else 1 for i,s in enumerate(ex_shape))
+              st_uop = ShapeTracker.from_shape(local_shape).expand(ex_shape).to_uop()
+              membuf = UOp(UOps.DEFINE_LOCAL, PtrDType(tc.dtype_in), (), (f"temp{-(-1-i)}", st_uop.arg.real_size()))
+              local_store = self.fixup_ast(UOp(UOps.STORE, tc.dtype_in, (membuf, st_uop, src)), fix_st_fxn)
+              srcs.append(UOp(UOps.LOAD, tc.dtype_in, (membuf, st_uop, local_store)))
+          else:
+            # for TC=2, we can't do the shapetracker fixup
+            srcs = [self.fixup_ast(rsrc.src[0]), self.fixup_ast(rsrc.src[1])]
+          # MUL/SUM instead of WMMA
+          ret = UOp(UOps.REDUCE_AXIS, tc.dtype_out, (srcs[0].alu(BinaryOps.MUL, srcs[1]).cast(tc.dtype_out),), (alu_op, wmma_arg[-1]))
+        else:
+          ret = UOp(UOps.WMMA, tc.dtype_out, (self.fixup_ast(rsrc.src[0], fix_st1), self.fixup_ast(rsrc.src[1], fix_st2)), wmma_arg)
+        new_reduce_axes = tuple(i for i in axis if i-self.first_upcast not in reduce_axes)
+        return replace(op, src=(ret,), arg=(alu_op, new_reduce_axes)) if new_reduce_axes else ret
+      if self.group_for_reduces:
+        start = UOp(UOps.REDUCE_AXIS, op.dtype, (self.fixup_ast(op.src[0], apply_to_st),), arg=(alu_op, axis))
+        second_axis = tuple(i for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces) \
                     if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i])
-        if op in self.bufs_for_tensor_core and (tc := self.tensor_core):
-          rsrc = op.src[0]
-          if rsrc.op is UOps.CAST: rsrc = rsrc.src[0]
-          assert rsrc.op is UOps.ALU and rsrc.arg is BinaryOps.MUL
-
-          def fix_st(warp_dims, tcd_dims, tcd_expand, pattern_1, pattern_2, st1):
-            wd, tcd = self.global_dims, self.first_upcast
-            assert st1.shape[wd:wd+len(warp_dims)] == warp_dims, f"warp dims wrong: {st1.shape[wd:wd+len(warp_dims)]=} != {warp_dims=}"
-            assert st1.shape[tcd:tcd+len(tcd_dims)] == tcd_dims, f"tcd dims wrong: {st1.shape[tcd:tcd+len(tcd_dims)]=} != {tcd_dims=}"
-            new_shape = st1.shape[:tcd] + tcd_expand + st1.shape[tcd+len(tcd_dims):]  # expand the tcd
-            permaxis = list(range(wd)) + [y + (wd if x == 0 else tcd) for x,y in pattern_1] + list(range(wd+len(warp_dims), tcd)) + \
-                                         [y + (wd if x == 0 else tcd) for x,y in pattern_2] + list(range(tcd+len(tcd_expand), len(new_shape)))
-            return st1.reshape(new_shape).simplify().permute(tuple(permaxis)).reshape(st1.shape).simplify()
-
-          threads = prod(t[1] for t in tc.threads)
-          if self.opts.device in {"AMD", "HIP"}:
-            reduce_axes, upcast_axes = [0], [[(0, 16)], [(0, 16)], [(1, 8)]]
-            # https://gpuopen.com/learn/wmma_on_rdna3/
-            fix_st1 = functools.partial(fix_st, (8,2,2), (16,8), (16,2,4), ((1,2), (0,2), (1,1), (0,1)), ((1,0), (0,0)))
-            fix_st2 = None
-          elif self.opts.device == "METAL":
-            reduce_axes, upcast_axes = [0], [[(1, 2)], [(1, 2)], [(1, 2)]]
-            fix_st1 = functools.partial(fix_st, (2,4,2,2), (8,2), (2,2,2,2), ((1,1), (0,1), (1,0), (0,3)), ((0,0), (0,2), (1,3), (1,2)))
-            fix_st2 = functools.partial(fix_st, (2,4,2,2), (8,2), (2,2,2,2), ((0,0), (1,1), (1,2), (0,2), (1,0)), ((0,1), (0,3), (1,3)))
-          elif self.opts.device == "CLANG":
-            reduce_axes, upcast_axes = [], [[(1,tc.dims[0])],[(0,tc.dims[1])],[(1, tc.dims[2]), (0, tc.dims[2])]]
-            threads, fix_st1, fix_st2 = threads // tc.dims[2], None, None
-          elif self.opts.device in {"CUDA", "NV"}:
-            reduce_axes, upcast_axes = [0, 1], [[(0, 8)], [(2, 2), (3, 2)], [(2, 2), (3, 2)]]
-            # https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-float
-            fix_st1 = functools.partial(fix_st, (2,2,2,2,2), (8,2,2,2), (2,2,2,2,2,2),
-              ((1,1), (1,0), (0,2), (0,3), (0,4)), ((1,3), (1,4), (1,2), (0,0), (0,1), (1,5)))
-            fix_st2 = functools.partial(fix_st, (2,2,2,2,2), (8,2,2,2), (2,2,2,2,2,2),
-              ((1,1), (1,0), (1,5), (0,0), (0,1)), ((0,4), (0,2), (1,4), (0,3), (1,3), (1,2)))
-          elif self.opts.suffix == "INTEL":
-            reduce_axes, upcast_axes = [0], [[(0, 16)], [(0, 16)], [(1, 8)]]
-            fix_st1 = functools.partial(fix_st, (8,), (16,8), (8,2,8), ((1,0),), ((1,2), (1,1), (0,0)))
-            fix_st2 = None
-          else:
-            raise RuntimeError("unsupported device for tensor cores")
-
-          assert apply_to_st is None, "double tensor core? not supported"
-          wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, threads,
-                      tuple(tuple((self.first_upcast+ax, sz) for ax, sz in up) for up in upcast_axes),
-                      tuple(self.first_upcast+ax for ax in reduce_axes))
-          if self.use_tensor_cores >= 2:
-            if self.use_tensor_cores == 3:
-              # TC=3, emulate the warp addressing with locals
-              ex_shape = tuple(1 if i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else s \
-                              for i,s in enumerate(self.full_shape))
-              srcs = []
-              for i,(src,fix_st_fxn) in enumerate(zip(rsrc.src, [fix_st1, fix_st2])):
-                st_load = [self.sts[self.bufs.index(op)].real_strides() for op in rsrc.parents if op.op is UOps.LOAD]
-                local_shape = tuple(s if max(cast(int, x[i]) for x in st_load) != 0 else 1 for i,s in enumerate(ex_shape))
-                st_uop = ShapeTracker.from_shape(local_shape).expand(ex_shape).to_uop()
-                membuf = UOp(UOps.DEFINE_LOCAL, PtrDType(tc.dtype_in), (), (f"temp{-(-1-i)}", st_uop.arg.real_size()))
-                local_store = fixup_ast(UOp(UOps.STORE, tc.dtype_in, (membuf, st_uop, src)), fix_st_fxn)
-                srcs.append(UOp(UOps.LOAD, tc.dtype_in, (membuf, st_uop, local_store)))
-            else:
-              # for TC=2, we can't do the shapetracker fixup
-              srcs = [fixup_ast(rsrc.src[0]), fixup_ast(rsrc.src[1])]
-            # MUL/SUM instead of WMMA
-            ret = UOp(UOps.REDUCE_AXIS, tc.dtype_out, (srcs[0].alu(BinaryOps.MUL, srcs[1]).cast(tc.dtype_out),), (alu_op, wmma_arg[-1]))
-          else:
-            ret = UOp(UOps.WMMA, tc.dtype_out, (fixup_ast(rsrc.src[0], fix_st1), fixup_ast(rsrc.src[1], fix_st2)), wmma_arg)
-          new_reduce_axes = tuple(i for i in axis if i-self.first_upcast not in reduce_axes)
-          return replace(op, src=(ret,), arg=(alu_op, new_reduce_axes)) if new_reduce_axes else ret
-        if self.group_for_reduces:
-          start = UOp(UOps.REDUCE_AXIS, op.dtype, (fixup_ast(op.src[0], apply_to_st),), arg=(alu_op, axis))
-          second_axis = tuple(i for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces) \
-                      if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i])
-          # NOTE: if there's a grouped reduce, but no reduce axes for this reduce, we can skip it
-          if len(second_axis) == 0: return start
-          local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.global_dims+self.local_dims] + \
-            tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
-              for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
-            (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.upcasted_axis(0)])
-          st_uop = ShapeTracker.from_shape(local_shape).to_uop()
-          local_buffer = UOp(UOps.DEFINE_LOCAL, PtrDType(cast(DType, op.dtype)), (), (f"temp{self.reduceops.index(op)+1}", st_uop.arg.real_size()))
-          local_load = UOp(UOps.LOAD, op.dtype, (local_buffer, st_uop, UOp.store(local_buffer, st_uop, start)))
-          grouped_reduce = UOp(UOps.REDUCE_AXIS, op.dtype, (local_load,), arg=(op.arg[0], second_axis))
-          if op is self.reduceops[-1]: return grouped_reduce
-          st_uop = ShapeTracker.from_shape(tuple([1 if i in second_axis else a for i,a in enumerate(local_shape)])).to_uop()
-          return UOp(UOps.LOAD, op.dtype, (local_buffer, st_uop, UOp.store(local_buffer, st_uop, grouped_reduce)))
-        arg = (alu_op, axis)
-      elif op.op is UOps.SINK:
-        arg = KernelInfo(self.local_dims, self.upcasted, self.dont_use_locals)
-      return replace(op, src=tuple(fixup_ast(x, apply_to_st) for x in op.src), arg=arg)
-    return fixup_ast(self.ast)
+        # NOTE: if there's a grouped reduce, but no reduce axes for this reduce, we can skip it
+        if len(second_axis) == 0: return start
+        local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.global_dims+self.local_dims] + \
+          tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
+            for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
+          (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.upcasted_axis(0)])
+        st_uop = ShapeTracker.from_shape(local_shape).to_uop()
+        local_buffer = UOp(UOps.DEFINE_LOCAL, PtrDType(cast(DType, op.dtype)), (), (f"temp{self.reduceops.index(op)+1}", st_uop.arg.real_size()))
+        local_load = UOp(UOps.LOAD, op.dtype, (local_buffer, st_uop, UOp.store(local_buffer, st_uop, start)))
+        grouped_reduce = UOp(UOps.REDUCE_AXIS, op.dtype, (local_load,), arg=(op.arg[0], second_axis))
+        if op is self.reduceops[-1]: return grouped_reduce
+        st_uop = ShapeTracker.from_shape(tuple([1 if i in second_axis else a for i,a in enumerate(local_shape)])).to_uop()
+        return UOp(UOps.LOAD, op.dtype, (local_buffer, st_uop, UOp.store(local_buffer, st_uop, grouped_reduce)))
+      arg = (alu_op, axis)
+    elif op.op is UOps.SINK:
+      arg = KernelInfo(self.local_dims, self.upcasted, self.dont_use_locals)
+    return replace(op, src=tuple(self.fixup_ast(x, apply_to_st) for x in op.src), arg=arg)
 
   # **** this is the lowerer ****
 
